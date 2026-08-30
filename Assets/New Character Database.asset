@@ -1,0 +1,35 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 92c41aa64190e2346ba3e12f863c3070, type: 3}
+  m_Name: New Character Database
+  m_EditorClassIdentifier: 
+  character:
+  - characterName: Albularyo
+    characterSprite: {fileID: 6577399168286912715, guid: 9b329c2ec1ebe3046a71aff94cef80e6, type: 3}
+    characterAsset: {fileID: 7108339969198208228, guid: 68499cd166b3f164ab8dfe9086b20086, type: 3}
+    characterAnimator: {fileID: 9100000, guid: 3ec2a0056a572f64489b6b0589dc519a, type: 2}
+  - characterName: Arkero
+    characterSprite: {fileID: -1682668703937542238, guid: d5be27f9239907645809e7d4b95c6878, type: 3}
+    characterAsset: {fileID: 7108339969198208228, guid: aa1350a6277549d489ef9c9f7ce3e720, type: 3}
+    characterAnimator: {fileID: 9100000, guid: 691148b4db35e0343b8a3fb2be393b4b, type: 2}
+  - characterName: Mandirigma
+    characterSprite: {fileID: 5769301301637887063, guid: 34b669faf0508ca408a39b1f0a9fde7b, type: 3}
+    characterAsset: {fileID: 0}
+    characterAnimator: {fileID: 9100000, guid: 13dd783faa6d50c4c9900dbb43609d18, type: 2}
+  - characterName: Salamangkero
+    characterSprite: {fileID: 3699305475400194335, guid: 47a99dc51e3dffe4697598d57ce00bbb, type: 3}
+    characterAsset: {fileID: 0}
+    characterAnimator: {fileID: 9100000, guid: 3ea608748c2fc4a4f8815f9eeae0d598, type: 2}
+  - characterName: Manananggal
+    characterSprite: {fileID: -2242669998247829876, guid: 88f27760e6c08ad49a210b300dce8166, type: 3}
+    characterAsset: {fileID: 0}
+    characterAnimator: {fileID: 9100000, guid: 1101af844a86e244fad156a3ee5b754e, type: 2}
