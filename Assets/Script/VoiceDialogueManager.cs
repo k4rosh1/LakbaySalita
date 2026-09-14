@@ -1,18 +1,19 @@
-﻿using System;
-using System.Collections;
+using UnityEngine;
+using System;
+using System.IO;
 using System.Collections.Generic;
 using TMPro;
-using UnityEngine;
 using UnityEngine.Events;
 
 public class VoiceDialogueManager : MonoBehaviour
 {
+    [Header("References")]
     public TextMeshProUGUI textComponent;
     public VoiceDialogueLine[] lines;
 
     [Header("Karaoke Text Color Settings")]
-    public Color32 unspokenColor = new Color32(128, 128, 128, 255); // Grey
-    public Color32 highlightColor = new Color32(255, 215, 0, 255);  // Gold
+    public Color32 unspokenColor = new Color32(128, 128, 128, 255);
+    public Color32 highlightColor = new Color32(255, 215, 0, 255);
 
     [Header("Voice SDK Triggers")]
     public UnityEvent onStartListening;
@@ -34,52 +35,83 @@ public class VoiceDialogueManager : MonoBehaviour
 
     void Start()
     {
-        textComponent.text = string.Empty;
-        StartDialogue();
+        if (textComponent != null)
+        {
+            textComponent.text = string.Empty;
+            StartDialogue();
+        }
     }
 
     void Update()
     {
-        if (Time.timeScale == 0f)
-            return;
-
-        if (!string.IsNullOrEmpty(simulatedSpokenWord) && (Input.GetKeyDown(KeyCode.Return) || Input.GetKeyDown(KeyCode.KeypadEnter)))
+        if (Input.GetKeyDown(KeyCode.Space))
         {
-            ProcessVoiceInput(simulatedSpokenWord);
-            simulatedSpokenWord = string.Empty;
+            if (!string.IsNullOrEmpty(simulatedSpokenWord))
+            {
+                ProcessVoiceInput(simulatedSpokenWord);
+            }
         }
+    }
 
-        if (isInCombat) return;
+    public void StartListening()
+    {
+        onStartListening?.Invoke();
+    }
 
-        if (Input.GetMouseButtonDown(0) && currentWordIndex >= currentWords.Length)
-        {
-            NextLine();
-        }
+    public void StopListening()
+    {
+        onStopListening?.Invoke();
     }
 
     void StartDialogue()
     {
         index = 0;
-        SetupLineSpeech();
+        if (lines.Length > 0)
+        {
+            SetupLineSpeech();
+        }
     }
 
     void SetupLineSpeech()
     {
-        string fullLine = lines[index].GetLine();
-        textComponent.text = fullLine;
+        textComponent.text = lines[index].GetLine();
 
-        char[] punctuation = new char[] { ' ', '.', ',', '!', '?', ';', ':', '"', '—' };
-        currentWords = fullLine.ToLower().Split(punctuation, StringSplitOptions.RemoveEmptyEntries);
+        textComponent.ForceMeshUpdate();
+
+        int wordCount = textComponent.textInfo.wordCount;
+        currentWords = new string[wordCount];
+
+        for (int i = 0; i < wordCount; i++)
+        {
+            TMP_WordInfo wInfo = textComponent.textInfo.wordInfo[i];
+            string wStr = textComponent.text.Substring(wInfo.firstCharacterIndex, wInfo.characterCount);
+            currentWords[i] = CleanWordForMatching(wStr);
+        }
+
         currentWordIndex = 0;
-
         SetEntireTextColor(unspokenColor);
-        onStartListening?.Invoke();
+        StartListening();
+    }
+
+    private string CleanWordForMatching(string input)
+    {
+        char[] punctuation = new char[] { '.', ',', '!', '?', ';', ':', '"', '-', '(', ')' };
+        return input.ToLower().Trim(punctuation);
+    }
+
+    private string ApplyPhoneticFallbacks(string input)
+    {
+        input = input.Replace("mayo miya", "mayumiya");
+        input = input.Replace("mayo miyak", "mayumiya");
+        return input;
     }
 
     public void ProcessVoiceInput(string spokenSentence)
     {
         string cleanSentence = spokenSentence.Trim().ToLower();
-        char[] punctuation = new char[] { ' ', '.', ',', '!', '?', ';', ':', '"', '—' };
+        cleanSentence = ApplyPhoneticFallbacks(cleanSentence);
+
+        char[] punctuation = new char[] { ' ', '.', ',', '!', '?', ';', ':', '"', '-' };
         string[] spokenWords = cleanSentence.Split(punctuation, StringSplitOptions.RemoveEmptyEntries);
 
         if (!isInCombat)
@@ -98,13 +130,14 @@ public class VoiceDialogueManager : MonoBehaviour
 
             if (currentWordIndex < currentWords.Length)
             {
-                onStartListening?.Invoke();
+                StartListening();
             }
 
             if (currentWordIndex >= currentWords.Length)
             {
-                onStopListening?.Invoke();
+                StopListening();
                 if (lines[index].enemyToSpawn != null) TriggerCombat();
+                else NextLine();
             }
         }
         else
@@ -131,16 +164,23 @@ public class VoiceDialogueManager : MonoBehaviour
     {
         if (string.IsNullOrEmpty(spoken) || string.IsNullOrEmpty(target)) return false;
 
-        // 1. Exact match (Always prioritize exact matches)
         if (spoken == target) return true;
 
-        // 2. Short words (ang, sa, ng, mga, si, at, ay) MUST match exactly
-        if (target.Length <= 3 || spoken.Length <= 3) return false;
+        if (target.Length <= 4 || spoken.Length <= 4)
+        {
+            if (Math.Abs(spoken.Length - target.Length) <= 2)
+            {
+                return GetLevenshteinDistance(spoken, target) <= 1;
+            }
+            if (target.Length <= 3 && spoken.Contains(target))
+            {
+                return true;
+            }
+            return false;
+        }
 
-        // 3. Reject if length difference is greater than 1 character (prevents "ang" -> "isang")
         if (Math.Abs(spoken.Length - target.Length) > 1) return false;
 
-        // 4. Allow 1 character typo/STT variation for long proper nouns (e.g., Mayumiya)
         return GetLevenshteinDistance(spoken, target) <= 1;
     }
 
@@ -193,13 +233,14 @@ public class VoiceDialogueManager : MonoBehaviour
                 enemySprite.flipX = false;
             }
         }
-        onStartListening?.Invoke();
+        StartListening();
     }
 
     void EndCombat()
     {
         isInCombat = false;
-        onStopListening?.Invoke();
+        StopListening();
+        NextLine();
     }
 
     void NextLine()
@@ -211,7 +252,7 @@ public class VoiceDialogueManager : MonoBehaviour
         }
         else
         {
-            onStopListening?.Invoke();
+            StopListening();
             gameObject.SetActive(false);
         }
     }
@@ -258,7 +299,7 @@ public class VoiceDialogueManager : MonoBehaviour
     }
 }
 
-[Serializable]
+[System.Serializable]
 public class VoiceDialogueLine
 {
     [TextArea] public string line;
@@ -271,8 +312,7 @@ public class VoiceDialogueLine
         if (specificCharacter && characterLine != null && characterLine.Length > 0)
         {
             int index = PlayerPrefs.GetInt("selectedOption", 0);
-            if (index < characterLine.Length)
-                return characterLine[index];
+            if (index < characterLine.Length) return characterLine[index];
         }
         return line;
     }
