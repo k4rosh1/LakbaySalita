@@ -6,6 +6,7 @@ using System;
 using System.IO;
 using System.Collections;
 using System.Collections.Generic;
+using System.Threading.Tasks;
 
 public class VoskVoiceManager : MonoBehaviour
 {
@@ -45,32 +46,84 @@ public class VoskVoiceManager : MonoBehaviour
         string finalModelPath = "";
 
 #if UNITY_ANDROID && !UNITY_EDITOR
+        // Request Microphone Permission
+        if (!UnityEngine.Android.Permission.HasUserAuthorizedPermission(UnityEngine.Android.Permission.Microphone))
+        {
+            UnityEngine.Android.Permission.RequestUserPermission(UnityEngine.Android.Permission.Microphone);
+            yield return new WaitForSeconds(1f); // wait for user prompt
+        }
+
         finalModelPath = Path.Combine(Application.persistentDataPath, modelFolderName);
         if (!Directory.Exists(finalModelPath))
         {
             Debug.Log("[Vosk] Decompressing model on Android device...");
             string zipPath = Path.Combine(Application.streamingAssetsPath, modelZipName);
-            Stream dataStream;
+            string tempZipPath = Path.Combine(Application.persistentDataPath, "temp_model.zip");
 
-            UnityWebRequest www = UnityWebRequest.Get(zipPath);
-            yield return www.SendWebRequest();
-            if (www.result != UnityWebRequest.Result.Success)
+            // Use DownloadHandlerFile to avoid OutOfMemoryException on large 300MB zip
+            if (zipPath.Contains("://") || zipPath.Contains(":///"))
             {
-                Debug.LogError("[Vosk] Failed to load zip: " + www.error);
+                using (UnityWebRequest www = new UnityWebRequest(zipPath, UnityWebRequest.kHttpVerbGET))
+                {
+                    www.downloadHandler = new DownloadHandlerFile(tempZipPath);
+                    yield return www.SendWebRequest();
+                    if (www.result != UnityWebRequest.Result.Success)
+                    {
+                        Debug.LogError("[Vosk] Failed to copy zip from StreamingAssets: " + www.error);
+                        yield break;
+                    }
+                }
+            }
+            else
+            {
+                File.Copy(zipPath, tempZipPath, true);
+            }
+
+            Debug.Log("[Vosk] Zip copied to persistentDataPath. Extracting in background thread...");
+            
+            bool doneExtracting = false;
+            Exception extractException = null;
+
+            // Extract in background thread to prevent App Not Responding (ANR) freeze!
+            Task.Run(() =>
+            {
+                try
+                {
+                    using (Stream dataStream = File.OpenRead(tempZipPath))
+                    using (var zipFile = ZipFile.Read(dataStream))
+                    {
+                        zipFile.ExtractAll(Application.persistentDataPath, ExtractExistingFileAction.OverwriteSilently);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    extractException = ex;
+                }
+                finally
+                {
+                    doneExtracting = true;
+                }
+            });
+
+            // Wait for background thread to finish
+            while (!doneExtracting)
+            {
+                yield return null; 
+            }
+
+            if (extractException != null)
+            {
+                Debug.LogError("[Vosk] Extraction failed: " + extractException.Message);
                 yield break;
             }
-            dataStream = new MemoryStream(www.downloadHandler.data);
 
-            bool doneExtracting = false;
-            using (var zipFile = ZipFile.Read(dataStream))
+            // Cleanup the temporary zip file to save 300MB of storage
+            if (File.Exists(tempZipPath))
             {
-                zipFile.ExtractProgress += (s, e) => {
-                    if (e.EventType == ZipProgressEventType.Extracting_AfterExtractAll) doneExtracting = true;
-                };
-                zipFile.ExtractAll(Application.persistentDataPath);
-                while (!doneExtracting) yield return null;
+                File.Delete(tempZipPath);
             }
-            
+
+            Debug.Log("[Vosk] Extraction complete!");
             yield return new WaitForSeconds(0.5f);
         }
 #else
@@ -87,6 +140,7 @@ public class VoskVoiceManager : MonoBehaviour
 
         try
         {
+            Debug.Log("[Vosk] Initializing Native C++ Library...");
             voskModel = new Model(finalModelPath);
             List<string> fullVocabulary = ExtractAllDialogueWords();
 
