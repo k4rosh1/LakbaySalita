@@ -1,7 +1,10 @@
 using UnityEngine;
+using UnityEngine.Networking;
+using Ionic.Zip;
 using Vosk;
 using System;
 using System.IO;
+using System.Collections;
 using System.Collections.Generic;
 
 public class VoskVoiceManager : MonoBehaviour
@@ -10,8 +13,9 @@ public class VoskVoiceManager : MonoBehaviour
     public VoiceDialogueManager dialogueManager;
 
     [Header("Vosk Settings")]
-    [Tooltip("Type the exact name of your Tagalog model folder inside StreamingAssets")]
-    public string modelFolderName = "your_model_folder_name_here";
+    [Tooltip("The zip file name inside StreamingAssets (for Android) AND the folder name (for PC). E.g., 'vosk-model-tl-ph-generic-0.6' for the folder, and 'vosk-model.zip' for Android.")]
+    public string modelFolderName = "vosk-model-tl-ph-generic-0.6";
+    public string modelZipName = "vosk-model.zip";
 
     [Header("Extra Custom Vocabulary")]
     [Tooltip("Add any additional words here that might not be in the dialogue lines directly.")]
@@ -23,43 +27,84 @@ public class VoskVoiceManager : MonoBehaviour
     private int samplingRate = 16000;
     private bool isListening = false;
     private int lastAudioPosition = 0;
+    private bool isReady = false;
 
     void Start()
     {
-        // Auto-assign DialogueManager if forgotten in Inspector
         if (dialogueManager == null)
         {
             dialogueManager = FindFirstObjectByType<VoiceDialogueManager>();
         }
 
-        // Hide standard Vosk debug logs
         Vosk.Vosk.SetLogLevel(-1);
+        StartCoroutine(InitVosk());
+    }
 
-        string modelPath = Path.Combine(Application.streamingAssetsPath, modelFolderName);
+    private IEnumerator InitVosk()
+    {
+        string finalModelPath = "";
 
-        if (!Directory.Exists(modelPath))
+#if UNITY_ANDROID && !UNITY_EDITOR
+        finalModelPath = Path.Combine(Application.persistentDataPath, modelFolderName);
+        if (!Directory.Exists(finalModelPath))
         {
-            Debug.LogError($"[VoskVoiceManager] Model folder not found at: {modelPath}. Check 'Model Folder Name' in the Inspector.");
-            return;
+            Debug.Log("[Vosk] Decompressing model on Android device...");
+            string zipPath = Path.Combine(Application.streamingAssetsPath, modelZipName);
+            Stream dataStream;
+
+            UnityWebRequest www = UnityWebRequest.Get(zipPath);
+            yield return www.SendWebRequest();
+            if (www.result != UnityWebRequest.Result.Success)
+            {
+                Debug.LogError("[Vosk] Failed to load zip: " + www.error);
+                yield break;
+            }
+            dataStream = new MemoryStream(www.downloadHandler.data);
+
+            bool doneExtracting = false;
+            using (var zipFile = ZipFile.Read(dataStream))
+            {
+                zipFile.ExtractProgress += (s, e) => {
+                    if (e.EventType == ZipProgressEventType.Extracting_AfterExtractAll) doneExtracting = true;
+                };
+                zipFile.ExtractAll(Application.persistentDataPath);
+                while (!doneExtracting) yield return null;
+            }
+            
+            yield return new WaitForSeconds(0.5f);
+        }
+#else
+        // On Desktop / Editor, we can just read the folder directly from StreamingAssets!
+        finalModelPath = Path.Combine(Application.streamingAssetsPath, modelFolderName);
+        yield return null;
+#endif
+
+        if (!Directory.Exists(finalModelPath))
+        {
+             Debug.LogError($"[Vosk] Final model path not found at: {finalModelPath}");
+             yield break;
         }
 
         try
         {
-            voskModel = new Model(modelPath);
-
-            // Extract all dialogue words dynamically
+            voskModel = new Model(finalModelPath);
             List<string> fullVocabulary = ExtractAllDialogueWords();
 
             if (fullVocabulary.Count > 0)
             {
+                // ADD [unk] so Vosk can detect unknown words instead of failing!
+                if (!fullVocabulary.Contains("[unk]")) fullVocabulary.Add("[unk]");
+                
                 string jsonGrammar = "[\"" + string.Join("\",\"", fullVocabulary) + "\"]";
                 recognizer = new VoskRecognizer(voskModel, samplingRate, jsonGrammar);
-                Debug.Log($"[VoskVoiceManager] Vosk initialized with {fullVocabulary.Count} unique words from Dialogue Manager.");
+                Debug.Log($"[VoskVoiceManager] Vosk initialized with {fullVocabulary.Count} unique words.");
             }
             else
             {
                 recognizer = new VoskRecognizer(voskModel, samplingRate);
             }
+            isReady = true;
+            Debug.Log("[Vosk] Successfully initialized and ready to listen!");
         }
         catch (Exception e)
         {
@@ -70,25 +115,18 @@ public class VoskVoiceManager : MonoBehaviour
     private List<string> ExtractAllDialogueWords()
     {
         HashSet<string> uniqueWords = new HashSet<string>();
-        char[] punctuation = new char[] { ' ', '.', ',', '!', '?', ';', ':', '"', '—', '-', '\n', '\r' };
+        char[] punctuation = new char[] { ' ', '.', ',', '!', '?', ';', ':', '"', '-', '\n', '\r' };
 
-        // 1. Collect from VoiceDialogueManager lines
-        // Note: Make sure the properties 'lines', 'line', 'characterLine', and 'combatSpells' 
-        // exactly match the variable names inside your actual VoiceDialogueManager script.
         if (dialogueManager != null && dialogueManager.lines != null)
         {
             foreach (var lineData in dialogueManager.lines)
             {
                 if (lineData == null) continue;
-
-                // Standard dialogue line
                 if (!string.IsNullOrEmpty(lineData.line))
                 {
                     string[] words = lineData.line.ToLower().Split(punctuation, StringSplitOptions.RemoveEmptyEntries);
                     foreach (string w in words) uniqueWords.Add(w.Trim());
                 }
-
-                // Character-specific dialogue lines
                 if (lineData.characterLine != null)
                 {
                     foreach (string cLine in lineData.characterLine)
@@ -99,8 +137,6 @@ public class VoskVoiceManager : MonoBehaviour
                     }
                 }
             }
-
-            // Collect spell words if available
             if (dialogueManager.combatSpells != null)
             {
                 foreach (string spell in dialogueManager.combatSpells)
@@ -110,8 +146,6 @@ public class VoskVoiceManager : MonoBehaviour
                 }
             }
         }
-
-        // 2. Add extra inspector-defined vocabulary words
         if (extraAcceptedWords != null)
         {
             foreach (string word in extraAcceptedWords)
@@ -120,17 +154,21 @@ public class VoskVoiceManager : MonoBehaviour
                     uniqueWords.Add(word.ToLower().Trim());
             }
         }
-
         return new List<string>(uniqueWords);
     }
 
     public void StartListening()
     {
-        if (isListening || recognizer == null) return;
+        if (isListening || recognizer == null || !isReady) 
+        {
+            Debug.LogWarning("[Vosk] Not ready to listen yet!");
+            return;
+        }
 
         microphoneClip = Microphone.Start(null, true, 10, samplingRate);
         isListening = true;
         lastAudioPosition = 0;
+        Debug.Log("[Vosk] Microphone Started!");
     }
 
     public void StopListening()
@@ -138,25 +176,22 @@ public class VoskVoiceManager : MonoBehaviour
         if (!isListening) return;
         Microphone.End(null);
         isListening = false;
+        Debug.Log("[Vosk] Microphone Stopped!");
     }
 
     void Update()
     {
-        if (!isListening || microphoneClip == null || recognizer == null) return;
+        if (!isListening || microphoneClip == null || recognizer == null || !isReady) return;
 
         int currentPosition = Microphone.GetPosition(null);
         if (currentPosition > lastAudioPosition)
         {
             int sampleCount = currentPosition - lastAudioPosition;
-
             float[] frameBuffer = new float[sampleCount];
             microphoneClip.GetData(frameBuffer, lastAudioPosition);
 
             short[] shortBuffer = new short[sampleCount];
-            for (int i = 0; i < sampleCount; i++)
-            {
-                shortBuffer[i] = (short)(frameBuffer[i] * 32767f);
-            }
+            for (int i = 0; i < sampleCount; i++) shortBuffer[i] = (short)(frameBuffer[i] * 32767f);
 
             byte[] byteBuffer = new byte[sampleCount * 2];
             Buffer.BlockCopy(shortBuffer, 0, byteBuffer, 0, byteBuffer.Length);
@@ -169,7 +204,6 @@ public class VoskVoiceManager : MonoBehaviour
             {
                 ParseAndSendResult(recognizer.PartialResult(), true);
             }
-
             lastAudioPosition = currentPosition;
         }
         else if (currentPosition < lastAudioPosition)
@@ -180,17 +214,13 @@ public class VoskVoiceManager : MonoBehaviour
 
     private void ParseAndSendResult(string json, bool isPartial)
     {
-        if (dialogueManager == null)
-        {
-            dialogueManager = FindFirstObjectByType<VoiceDialogueManager>();
-            if (dialogueManager == null) return;
-        }
-
+        if (dialogueManager == null) return;
         VoskResult result = JsonUtility.FromJson<VoskResult>(json);
         string spokenText = isPartial ? result.partial : result.text;
 
         if (!string.IsNullOrWhiteSpace(spokenText))
         {
+            Debug.Log($"<color=cyan>Vosk Heard: '{spokenText}'</color>");
             dialogueManager.ProcessVoiceInput(spokenText);
         }
     }
@@ -203,7 +233,6 @@ public class VoskVoiceManager : MonoBehaviour
     }
 }
 
-// --- MISSING CLASS ADDED HERE ---
 [System.Serializable]
 public class VoskResult
 {
